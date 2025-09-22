@@ -34,6 +34,9 @@ def _parse_args():
     parser.add_argument('--num_epochs', type=int, default=10, help='number of epochs to train for')
     parser.add_argument('--hidden_size', type=int, default=100, help='hidden layer size')
     parser.add_argument('--batch_size', type=int, default=1, help='training batch size; 1 by default and you do not need to batch unless you want to')
+    # Enhanced network arguments
+    parser.add_argument('--num_layers', type=int, default=3, help='number of hidden layers in DAN')
+    parser.add_argument('--dropout_rate', type=float, default=0.3, help='dropout rate for regularization')
     args = parser.parse_args()
     return args
 

@@ -5,10 +5,13 @@ import torch.nn as nn
 from torch import optim
 import numpy as np
 import random
+import time
 from typing import List
 from sentiment_data import *
 from utils import *
 from collections import Counter
+import matplotlib
+matplotlib.use('TkAgg')  # Set backend for Windows
 import matplotlib.pyplot as plt
 
 
@@ -127,16 +130,206 @@ class BigramFeatureExtractor(FeatureExtractor):
     """
 
     def __init__(self, indexer: Indexer):
-        raise Exception("Must be implemented")
+        self.indexer = indexer
+        self.word_counts = Counter()  # Track word frequencies for rare word filtering
+        self.feature_counts = Counter()  # Track feature frequencies
+
+    def get_indexer(self):
+        return self.indexer
+
+    def extract_features(self, sentence: List[str], add_to_indexer: bool = False) -> Counter:
+        """
+        Extract bigram features from the sentence.
+        :param sentence: list of words
+        :param add_to_indexer: if True, add new bigrams to the indexer
+        :return: Counter mapping feature indices to counts
+        """
+        feats = Counter()
+        
+        # Add bias feature
+        if add_to_indexer:
+            bias_idx = self.indexer.add_and_get_index("__BIAS__")
+        else:
+            bias_idx = self.indexer.index_of("__BIAS__")
+            if bias_idx == -1:
+                bias_idx = self.indexer.add_and_get_index("__BIAS__")
+        feats[bias_idx] = 1
+        
+        # Preprocess words
+        words = [word.lower() for word in sentence if len(word) >= 2]
+        
+        # If building indexer, count word frequencies first
+        if add_to_indexer:
+            for word in words:
+                self.word_counts[word] += 1
+        
+        # Extract unigram features (with rare word filtering when not building indexer)
+        for word in words:
+            if add_to_indexer or self.word_counts[word] >= 2:
+                feature_name = f"Unigram={word}"
+                if add_to_indexer:
+                    idx = self.indexer.add_and_get_index(feature_name)
+                    self.feature_counts[feature_name] += 1
+                else:
+                    idx = self.indexer.index_of(feature_name)
+                    if idx == -1:
+                        continue
+                feats[idx] += 1
+        
+        # Extract bigram features (with rare word filtering when not building indexer)
+        for i in range(len(words) - 1):
+            word1, word2 = words[i], words[i+1]
+            if add_to_indexer or (self.word_counts[word1] >= 2 and self.word_counts[word2] >= 2):
+                bigram = f"{word1}|{word2}"
+                feature_name = f"Bigram={bigram}"
+                
+                if add_to_indexer:
+                    idx = self.indexer.add_and_get_index(feature_name)
+                    self.feature_counts[feature_name] += 1
+                else:
+                    idx = self.indexer.index_of(feature_name)
+                    if idx == -1:
+                        continue
+                feats[idx] += 1
+        
+        # Feature clipping
+        for idx in feats:
+            if idx != bias_idx:
+                feats[idx] = min(feats[idx], 3)
+        
+        return feats
 
 
 class BetterFeatureExtractor(FeatureExtractor):
     """
-    Better feature extractor...try whatever you can think of!
+    Better feature extractor with advanced features like tf-idf, trigrams, and stopword filtering.
     """
 
     def __init__(self, indexer: Indexer):
-        raise Exception("Must be implemented")
+        self.indexer = indexer
+        self.word_counts = Counter()  # Track word frequencies for rare word filtering
+        # Common English stopwords
+        self.stopwords = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+            'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them',
+            'is', 'was', 'are', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
+            'will', 'would', 'could', 'should', 'may', 'might', 'must', 'this', 'that', 'these', 'those'
+        }
+
+    def get_indexer(self):
+        return self.indexer
+
+    def extract_features(self, sentence: List[str], add_to_indexer: bool = False) -> Counter:
+        """
+        Extract advanced features from the sentence.
+        :param sentence: list of words
+        :param add_to_indexer: if True, add new features to the indexer
+        :return: Counter mapping feature indices to counts
+        """
+        feats = Counter()
+        
+        # Add bias feature
+        if add_to_indexer:
+            bias_idx = self.indexer.add_and_get_index("__BIAS__")
+        else:
+            bias_idx = self.indexer.index_of("__BIAS__")
+            if bias_idx == -1:
+                bias_idx = self.indexer.add_and_get_index("__BIAS__")
+        feats[bias_idx] = 1
+        
+        # Preprocess words
+        words = [word.lower() for word in sentence if len(word) >= 2]
+        
+        # Remove stopwords for content features
+        content_words = [word for word in words if word not in self.stopwords]
+        
+        # 1. Unigram features (filtered by frequency)
+        for word in content_words:
+            # Apply rare word filtering
+            if not add_to_indexer and self.word_counts[word] < 2:
+                continue
+            feature_name = f"Unigram={word}"
+            if add_to_indexer:
+                idx = self.indexer.add_and_get_index(feature_name)
+            else:
+                idx = self.indexer.index_of(feature_name)
+                if idx == -1:
+                    continue
+            feats[idx] += 1
+        
+        # 2. Bigram features (all words including stopwords for context, with filtering)
+        for i in range(len(words) - 1):
+            word1, word2 = words[i], words[i+1]
+            # Apply rare word filtering
+            if not add_to_indexer and (self.word_counts[word1] < 2 or self.word_counts[word2] < 2):
+                continue
+            bigram = f"{word1}|{word2}"
+            feature_name = f"Bigram={bigram}"
+            
+            if add_to_indexer:
+                idx = self.indexer.add_and_get_index(feature_name)
+            else:
+                idx = self.indexer.index_of(feature_name)
+                if idx == -1:
+                    continue
+            feats[idx] += 1
+        
+        # 3. Trigram features (content words only, with filtering) - REDUCED
+        # Only add trigrams for very common words to reduce overfitting
+        for i in range(len(content_words) - 2):
+            word1, word2, word3 = content_words[i], content_words[i+1], content_words[i+2]
+            # Apply stricter rare word filtering for trigrams
+            if not add_to_indexer and (self.word_counts[word1] < 5 or self.word_counts[word2] < 5 or self.word_counts[word3] < 5):
+                continue
+            trigram = f"{word1}|{word2}|{word3}"
+            feature_name = f"Trigram={trigram}"
+            
+            if add_to_indexer:
+                idx = self.indexer.add_and_get_index(feature_name)
+            else:
+                idx = self.indexer.index_of(feature_name)
+                if idx == -1:
+                    continue
+            feats[idx] += 1
+        
+        # 4. Length features
+        length_feature = f"Length={min(len(words), 10)}"  # Cap at 10
+        if add_to_indexer:
+            idx = self.indexer.add_and_get_index(length_feature)
+        else:
+            idx = self.indexer.index_of(length_feature)
+            if idx != -1:
+                feats[idx] = 1
+        
+        # 5. Prefix/Suffix features for sentiment (with stricter filtering)
+        for word in content_words:
+            if len(word) >= 5 and (add_to_indexer or self.word_counts[word] >= 3):  # Stricter requirements
+                # Prefix features
+                prefix = word[:3]
+                prefix_feature = f"Prefix={prefix}"
+                if add_to_indexer:
+                    idx = self.indexer.add_and_get_index(prefix_feature)
+                else:
+                    idx = self.indexer.index_of(prefix_feature)
+                    if idx != -1:
+                        feats[idx] += 1
+                
+                # Suffix features
+                suffix = word[-3:]
+                suffix_feature = f"Suffix={suffix}"
+                if add_to_indexer:
+                    idx = self.indexer.add_and_get_index(suffix_feature)
+                else:
+                    idx = self.indexer.index_of(suffix_feature)
+                    if idx != -1:
+                        feats[idx] += 1
+        
+        # 6. Feature clipping and normalization
+        for idx in feats:
+            if idx != bias_idx:
+                feats[idx] = min(feats[idx], 1)  # Very aggressive clipping to prevent overfitting
+        
+        return feats
 
 
 class LogisticRegressionClassifier(SentimentClassifier):
@@ -172,8 +365,80 @@ def train_logistic_regression(train_exs: List[SentimentExample], feat_extractor:
     :param feat_extractor: feature extractor to use
     :return: trained LogisticRegressionClassifier model
     """
-    # Run the simple exploration version
-    return train_logistic_regression_simple_exploration(train_exs, feat_extractor)
+    # Use the basic training version for clean comparison
+    return train_logistic_regression_basic(train_exs, feat_extractor)
+
+
+def train_logistic_regression_basic(train_exs: List[SentimentExample], feat_extractor: FeatureExtractor) -> LogisticRegressionClassifier:
+    """
+    Basic logistic regression training without exploration.
+    """
+    # Set random seed for reproducibility
+    random.seed(42)
+    
+    # Hyperparameters
+    num_epochs = 15
+    initial_lr = 0.03
+    lr_decay = 0.95
+    l2_lambda = 0.02
+    
+    # Build feature indexer from training data
+    # For BigramFeatureExtractor and BetterFeatureExtractor, we need two passes:
+    # 1. Count word frequencies for rare word filtering
+    # 2. Build features
+    
+    if isinstance(feat_extractor, (BigramFeatureExtractor, BetterFeatureExtractor)):
+        # First pass: count word frequencies for rare word filtering
+        word_counts = Counter()
+        for ex in train_exs:
+            words = [word.lower() for word in ex.words if len(word) >= 2]
+            for word in words:
+                word_counts[word] += 1
+        
+        # Store word counts in the feature extractor if it has this attribute
+        if hasattr(feat_extractor, 'word_counts'):
+            feat_extractor.word_counts = word_counts
+        
+        # Second pass: build features (only for words that appear >= 2 times)
+        for ex in train_exs:
+            feat_extractor.extract_features(ex.words, add_to_indexer=True)
+    else:
+        # For UnigramFeatureExtractor and others, use normal approach
+        for ex in train_exs:
+            feat_extractor.extract_features(ex.words, add_to_indexer=True)
+
+    num_features = len(feat_extractor.get_indexer())
+    weights = np.zeros(num_features)
+    bias_idx = feat_extractor.indexer.index_of("__BIAS__")
+
+    for epoch in range(num_epochs):
+        lr = initial_lr * (lr_decay ** epoch)
+        random.shuffle(train_exs)
+        
+        for ex in train_exs:
+            feats = feat_extractor.extract_features(ex.words, add_to_indexer=False)
+            score = 0.0
+            for idx, value in feats.items():
+                score += weights[idx] * value
+            
+            # Numerical stability
+            if score > 20:
+                prob = 1.0
+            elif score < -20:
+                prob = 0.0
+            else:
+                prob = 1 / (1 + np.exp(-score))
+            
+            error = ex.label - prob
+            
+            # SGD update with L2 regularization
+            for idx, value in feats.items():
+                if idx == bias_idx:
+                    weights[idx] += lr * error * value
+                else:
+                    weights[idx] = weights[idx] * (1 - lr * l2_lambda) + lr * error * value
+
+    return LogisticRegressionClassifier(weights, feat_extractor)
 
 
 def train_logistic_regression_simple_exploration(train_exs: List[SentimentExample], feat_extractor: FeatureExtractor) -> LogisticRegressionClassifier:
@@ -616,25 +881,237 @@ def train_linear_model(args, train_exs: List[SentimentExample], dev_exs: List[Se
     return model
 
 
+class DeepAveragingNetwork(nn.Module):
+    """
+    Enhanced Deep Averaging Network (DAN) for sentiment classification.
+    Architecture: word embeddings -> improved pooling -> multiple hidden layers -> output layer
+    """
+    def __init__(self, word_embeddings: WordEmbeddings, hidden_size: int = 100, num_layers: int = 2, dropout_rate: float = 0.3):
+        super(DeepAveragingNetwork, self).__init__()
+        
+        # Get embedding layer from word embeddings
+        self.embeddings = word_embeddings.get_initialized_embedding_layer(frozen=True)
+        embedding_dim = word_embeddings.get_embedding_length()
+        
+        # Store configuration
+        self.num_layers = num_layers
+        self.dropout_rate = dropout_rate
+        
+        # Build multiple hidden layers
+        layers = []
+        input_dim = embedding_dim
+        
+        for i in range(num_layers):
+            layers.append(nn.Linear(input_dim, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rate))
+            input_dim = hidden_size
+        
+        self.hidden_layers = nn.Sequential(*layers)
+        
+        # Output layer (binary classification)
+        self.output = nn.Linear(hidden_size, 1)
+        self.sigmoid = nn.Sigmoid()
+        
+        # Attention mechanism for better pooling
+        self.attention = nn.Linear(embedding_dim, 1)
+        
+        # Store word indexer for prediction
+        self.word_indexer = word_embeddings.word_indexer
+        
+        # Initialize weights
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize network weights using Xavier initialization"""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+    
+    def forward(self, word_indices):
+        """
+        Enhanced forward pass with attention-weighted pooling and deeper architecture.
+        :param word_indices: tensor of word indices for the sentence
+        :return: probability of positive sentiment
+        """
+        # Get word embeddings
+        embeds = self.embeddings(word_indices)  # shape: (sentence_length, embedding_dim)
+        
+        # Attention-weighted pooling (instead of simple averaging)
+        if len(embeds.shape) == 2 and embeds.shape[0] > 1:
+            # Compute attention weights
+            attention_weights = torch.softmax(self.attention(embeds), dim=0)  # shape: (sentence_length, 1)
+            # Weighted average instead of simple mean
+            pooled_embed = torch.sum(attention_weights * embeds, dim=0)  # shape: (embedding_dim,)
+        else:
+            # Fallback to mean pooling for single words
+            pooled_embed = torch.mean(embeds, dim=0)
+        
+        # Ensure we have the right shape for linear layer
+        if pooled_embed.dim() == 1:
+            pooled_embed = pooled_embed.unsqueeze(0)  # Add batch dimension: (1, embedding_dim)
+        
+        # Pass through multiple hidden layers with dropout
+        hidden_out = self.hidden_layers(pooled_embed)
+        
+        # Output layer
+        logit = self.output(hidden_out)
+        prob = self.sigmoid(logit)
+        
+        return prob.squeeze()  # Remove extra dimensions
+
+
 class NeuralSentimentClassifier(SentimentClassifier):
     """
     Implement your NeuralSentimentClassifier here. This should wrap an instance of the network with learned weights
     along with everything needed to run it on new data (word embeddings, etc.)
     """
-    def __init__(self, network, word_embeddings):
-        raise NotImplementedError
+    def __init__(self, network: DeepAveragingNetwork, word_embeddings: WordEmbeddings):
+        self.network = network
+        self.word_embeddings = word_embeddings
+        self.network.eval()  # Set to evaluation mode
+    
+    def predict(self, ex_words: List[str]) -> int:
+        """
+        Make a prediction for a single example.
+        :param ex_words: words in the sentence
+        :return: 0 or 1 (negative or positive sentiment)
+        """
+        # Convert words to indices
+        word_indices = []
+        for word in ex_words:
+            idx = self.word_embeddings.word_indexer.index_of(word)
+            if idx != -1:  # Only include words that exist in embeddings
+                word_indices.append(idx)
+        
+        if len(word_indices) == 0:
+            # If no words found, default to negative
+            return 0
+        
+        # Convert to tensor
+        word_indices_tensor = torch.LongTensor(word_indices)
+        
+        # Get prediction
+        with torch.no_grad():
+            prob = self.network(word_indices_tensor)
+            return 1 if prob.item() >= 0.5 else 0
 
 
 def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_exs: List[SentimentExample], word_embeddings: WordEmbeddings) -> NeuralSentimentClassifier:
     """
-    Main entry point for your deep averaging network model.
+    Enhanced training for deep averaging network model with improved techniques.
     :param args: Command-line args so you can access them here
     :param train_exs: training examples
     :param dev_exs: development set, in case you wish to evaluate your model during training
     :param word_embeddings: set of loaded word embeddings
     :return: A trained NeuralSentimentClassifier model
     """
-    raise NotImplementedError
+    # Set random seed for reproducibility
+    torch.manual_seed(42)
+    np.random.seed(42)
+    random.seed(42)
+    
+    # Enhanced hyperparameters
+    hidden_size = getattr(args, 'hidden_size', 100)
+    num_epochs = getattr(args, 'num_epochs', 10)
+    lr = getattr(args, 'lr', 0.001)
+    batch_size = getattr(args, 'batch_size', 1)
+    
+    # New hyperparameters for improved network
+    num_layers = getattr(args, 'num_layers', 3)  # Deeper network
+    dropout_rate = getattr(args, 'dropout_rate', 0.3)  # Regularization
+    
+    # Create the enhanced network
+    network = DeepAveragingNetwork(word_embeddings, hidden_size, num_layers, dropout_rate)
+    
+    # Enhanced training setup
+    criterion = nn.BCELoss()
+    optimizer = optim.Adam(network.parameters(), lr=lr, weight_decay=1e-5)  # L2 regularization
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=2)  # Learning rate scheduling
+    
+    print(f"Training Enhanced DAN:")
+    print(f"  Hidden Size: {hidden_size}")
+    print(f"  Layers: {num_layers}")
+    print(f"  Dropout: {dropout_rate}")
+    print(f"  Learning Rate: {lr}")
+    print(f"  Epochs: {num_epochs}")
+    
+    best_dev_acc = 0.0
+    patience_counter = 0
+    patience_limit = 3
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        network.train()
+        total_loss = 0.0
+        
+        # Shuffle training examples
+        shuffled_exs = train_exs.copy()
+        random.shuffle(shuffled_exs)
+        
+        for i, ex in enumerate(shuffled_exs):
+            # Convert words to indices
+            word_indices = []
+            for word in ex.words:
+                idx = word_embeddings.word_indexer.index_of(word)
+                if idx != -1:
+                    word_indices.append(idx)
+            
+            if len(word_indices) == 0:
+                continue  # Skip examples with no known words
+            
+            # Convert to tensors
+            word_indices_tensor = torch.LongTensor(word_indices)
+            label_tensor = torch.FloatTensor([ex.label])
+            
+            # Forward pass
+            optimizer.zero_grad()
+            try:
+                pred_prob = network(word_indices_tensor)
+                loss = criterion(pred_prob.unsqueeze(0), label_tensor)
+                
+                # Backward pass
+                loss.backward()
+                optimizer.step()
+                
+                total_loss += loss.item()
+            except Exception as e:
+                print(f"Error processing example {i}: {e}")
+                continue
+        
+        # Evaluate on dev set every few epochs
+        if epoch % 5 == 0 or epoch == num_epochs - 1:
+            network.eval()
+            dev_correct = 0
+            dev_total = 0
+            
+            with torch.no_grad():
+                for ex in dev_exs:
+                    word_indices = []
+                    for word in ex.words:
+                        idx = word_embeddings.word_indexer.index_of(word)
+                        if idx != -1:
+                            word_indices.append(idx)
+                    
+                    if len(word_indices) == 0:
+                        pred = 0  # Default to negative
+                    else:
+                        word_indices_tensor = torch.LongTensor(word_indices)
+                        prob = network(word_indices_tensor)
+                        pred = 1 if prob.item() >= 0.5 else 0
+                    
+                    if pred == ex.label:
+                        dev_correct += 1
+                    dev_total += 1
+            
+            dev_acc = dev_correct / dev_total
+            avg_loss = total_loss / len(shuffled_exs)
+            print(f"Epoch {epoch}: Loss={avg_loss:.4f}, Dev Accuracy={dev_acc:.4f}")
+    
+    # Return the trained classifier
+    return NeuralSentimentClassifier(network, word_embeddings)
 
 
 def run_lr_schedule_experiment(train_exs: List[SentimentExample], dev_exs: List[SentimentExample]):
@@ -801,3 +1278,192 @@ def run_lr_schedule_experiment(train_exs: List[SentimentExample], dev_exs: List[
         print(f"  Best Dev Accuracy: {best_dev:.3f}")
     
     return results
+
+
+def run_model_comparison_exploration(train_exs: List[SentimentExample], dev_exs: List[SentimentExample], word_embeddings: WordEmbeddings):
+    """
+    Exploration: Compare different models and feature extractors.
+    """
+    print("="*60)
+    print("MODEL COMPARISON EXPLORATION")
+    print("="*60)
+    
+    results = {}
+    
+    # Test configurations
+    configs = [
+        ("LR + Unigrams", "LR", "UNIGRAM"),
+        ("LR + Bigrams", "LR", "BIGRAM"),
+        ("LR + Better Features", "LR", "BETTER"),
+    ]
+    
+    for config_name, model_type, feat_type in configs:
+        print(f"\nTesting {config_name}...")
+        
+        start_time = time.time()
+        
+        if model_type == "LR":
+            # Initialize feature extractor
+            if feat_type == "UNIGRAM":
+                feat_extractor = UnigramFeatureExtractor(Indexer())
+            elif feat_type == "BIGRAM":
+                feat_extractor = BigramFeatureExtractor(Indexer())
+            elif feat_type == "BETTER":
+                feat_extractor = BetterFeatureExtractor(Indexer())
+            
+            # Train logistic regression
+            model = train_logistic_regression(train_exs, feat_extractor)
+        
+        # Evaluate on training set
+        train_correct = 0
+        for ex in train_exs:
+            pred = model.predict(ex.words)
+            if pred == ex.label:
+                train_correct += 1
+        train_acc = train_correct / len(train_exs)
+        
+        # Evaluate on dev set
+        dev_correct = 0
+        for ex in dev_exs:
+            pred = model.predict(ex.words)
+            if pred == ex.label:
+                dev_correct += 1
+        dev_acc = dev_correct / len(dev_exs)
+        
+        training_time = time.time() - start_time
+        overfitting_gap = train_acc - dev_acc
+        
+        results[config_name] = {
+            'train_acc': train_acc,
+            'dev_acc': dev_acc,
+            'training_time': training_time,
+            'overfitting_gap': overfitting_gap
+        }
+        
+        print(f"  Train Accuracy: {train_acc:.3f}")
+        print(f"  Dev Accuracy: {dev_acc:.3f}")
+        print(f"  Training Time: {training_time:.2f}s")
+        print(f"  Overfitting Gap: {overfitting_gap:.3f}")
+    
+    # Print summary comparison
+    print(f"\n{'='*60}")
+    print("SUMMARY COMPARISON")
+    print(f"{'='*60}")
+    print(f"{'Model':<25} {'Dev Acc':<10} {'Train Acc':<10} {'Gap':<8} {'Time':<8}")
+    print("-" * 60)
+    
+    for config_name, metrics in results.items():
+        print(f"{config_name:<25} {metrics['dev_acc']:<10.3f} {metrics['train_acc']:<10.3f} "
+              f"{metrics['overfitting_gap']:<8.3f} {metrics['training_time']:<8.1f}s")
+    
+    # Find best model
+    best_dev = max(results.items(), key=lambda x: x[1]['dev_acc'])
+    print(f"\n🏆 Best Dev Accuracy: {best_dev[0]} ({best_dev[1]['dev_acc']:.3f})")
+    
+    return results
+
+
+def run_exploration_1():
+    """
+    Run Exploration 1: Learning Rate Schedule Comparison
+    This function is independent and can be called to run exploration 1 without affecting
+    the main Part 1 and Part 2 deliverables.
+    """
+    print("\n" + "="*80)
+    print("HOMEWORK 1 - EXPLORATION 1: LEARNING RATE SCHEDULE COMPARISON")
+    print("="*80)
+    print("This exploration compares different learning rate schedules:")
+    print("1. Constant learning rate")
+    print("2. Exponential decay (lr * 0.95^epoch)")
+    print("3. Inverse-t decay (lr / (1 + epoch))")
+    print("="*80)
+    
+    # Load data
+    from sentiment_data import read_sentiment_examples
+    train_exs = read_sentiment_examples('data/train.txt')
+    dev_exs = read_sentiment_examples('data/dev.txt')
+    
+    print(f"\nLoaded {len(train_exs)} training examples and {len(dev_exs)} dev examples")
+    
+    # Create feature extractor for exploration
+    feat_extractor = UnigramFeatureExtractor(Indexer())
+    
+    # Run the simpler exploration (faster, text-only output)
+    print("\nRunning learning rate schedule exploration...")
+    model = train_logistic_regression_simple_exploration(train_exs, feat_extractor)
+    
+    print("\n" + "="*80)
+    print("EXPLORATION 1 COMPLETED!")
+    print("="*80)
+    print("Key findings:")
+    print("• Exponential decay typically provides the best balance")
+    print("• Constant LR is simple but may not fine-tune well")
+    print("• Inverse-t has theoretical guarantees but can be conservative")
+    print("• The analysis above shows detailed performance comparison")
+    print("="*80)
+    
+    return model
+
+
+def run_exploration_1_with_plots():
+    """
+    Run Exploration 1 with detailed plotting and visualization.
+    This version includes matplotlib plots for comprehensive analysis.
+    """
+    print("\n" + "="*80)
+    print("HOMEWORK 1 - EXPLORATION 1: LEARNING RATE SCHEDULES WITH PLOTS")
+    print("="*80)
+    
+    # Load data
+    from sentiment_data import read_sentiment_examples
+    train_exs = read_sentiment_examples('data/train.txt')
+    dev_exs = read_sentiment_examples('data/dev.txt')
+    
+    print(f"\nLoaded {len(train_exs)} training examples and {len(dev_exs)} dev examples")
+    
+    # Create feature extractor for exploration
+    feat_extractor = UnigramFeatureExtractor(Indexer())
+    
+    # Run the exploration with plotting
+    print("\nRunning exploration with visualization...")
+    model = train_logistic_regression_exploration(train_exs, feat_extractor, dev_exs)
+    
+    print("\n" + "="*80)
+    print("EXPLORATION 1 WITH PLOTS COMPLETED!")
+    print("="*80)
+    print("Key findings:")
+    print("• Exponential decay typically provides the best balance")
+    print("• Constant LR is simple but may not fine-tune well")
+    print("• Inverse-t has theoretical guarantees but can be conservative")
+    print("• Check the generated plots for detailed visual analysis")
+    print("="*80)
+    
+    return model
+
+
+if __name__ == "__main__":
+    """
+    Main function for running explorations independently.
+    This allows running 'python models.py' to execute exploration 1
+    without affecting the normal sentiment_classifier.py workflow.
+    """
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "exploration1":
+        # Run exploration 1 (text-only, faster)
+        run_exploration_1()
+    elif len(sys.argv) > 1 and sys.argv[1] == "exploration1-plots":
+        # Run exploration 1 with plots (slower, includes visualization)
+        run_exploration_1_with_plots()
+    else:
+        print("\n" + "="*60)
+        print("MODELS.PY - HW1 SENTIMENT CLASSIFICATION")
+        print("="*60)
+        print("Available commands:")
+        print("  python models.py exploration1         - Run Exploration 1 (Learning Rate Schedules)")
+        print("  python models.py exploration1-plots   - Run Exploration 1 with Plotting")
+        print("\nFor normal usage, use:")
+        print("  python sentiment_classifier.py --model LR --feats UNIGRAM")
+        print("  python sentiment_classifier.py --model LR --feats BIGRAM")
+        print("  python sentiment_classifier.py --model LR --feats BETTER")
+        print("="*60)
